@@ -65,7 +65,7 @@ cv::Mat findHomography(cv::Mat St, cv::Mat En)
 }
 
 cv::Mat RANSAC(std::vector<cv::KeyPoint> keyPoint1, std::vector<cv::KeyPoint> keyPoint2, std::vector<cv::DMatch> matches,
-    cv::Mat img1, cv::Mat img2, int turns=1000, double standard=5)
+    cv::Mat img1, cv::Mat img2, int turns=1000, double standard=10)
 {
     cv::Mat BestTr;
     int best = 0;
@@ -73,13 +73,28 @@ cv::Mat RANSAC(std::vector<cv::KeyPoint> keyPoint1, std::vector<cv::KeyPoint> ke
         std::vector<int> unique_set;
         while(unique_set.size() < 4) {
             int tmp = rand()%matches.size();
-            // std::cout << tmp << std::endl;
             if(std::find(unique_set.begin(), unique_set.end(), tmp) == unique_set.end()) {
                 unique_set.push_back(tmp);
             }
         }
         cv::Mat St = cv::Mat::ones(3, 4, CV_32F);
         cv::Mat En = cv::Mat::ones(3, 4, CV_32F);
+
+        // 坐标归一化矩阵
+        cv::Mat St_norm = cv::Mat::zeros(3, 3, CV_32F);
+        cv::Mat En_norm = cv::Mat::zeros(3, 3, CV_32F);
+        St_norm.at<float>(0, 0) = float(2.0)/img1.cols;
+        St_norm.at<float>(0, 2) = -1.0;
+        St_norm.at<float>(1, 1) = float(2.0)/img1.rows;
+        St_norm.at<float>(1, 2) = -1.0;
+        St_norm.at<float>(2, 2) = 1.0;
+
+        En_norm.at<float>(0, 0) = float(2.0)/img2.cols;
+        En_norm.at<float>(0, 2) = -1.0;
+        En_norm.at<float>(1, 1) = float(2.0)/img2.rows;
+        En_norm.at<float>(1, 2) = -1.0;
+        En_norm.at<float>(2, 2) = 1.0;
+
         for(int i = 0; i < 4; i++) {
             cv::DMatch match = matches[unique_set[i]];
             cv::KeyPoint p1 = keyPoint1[match.queryIdx];
@@ -88,31 +103,26 @@ cv::Mat RANSAC(std::vector<cv::KeyPoint> keyPoint1, std::vector<cv::KeyPoint> ke
             St.at<float>(1, i) = p1.pt.y;
             En.at<float>(0, i) = p2.pt.x;
             En.at<float>(1, i) = p2.pt.y;
-            // St.at<float>(0, i) = (float)(2*p1.pt.x-img1.cols) / img1.cols;
-            // St.at<float>(1, i) = (float)(2*p1.pt.y-img1.rows) / img1.rows;
-            // En.at<float>(0, i) = (float)(2*p2.pt.x-img2.cols) / img2.cols;
-            // En.at<float>(1, i) = (float)(2*p2.pt.y-img2.rows) / img2.rows;
         }
+        St = St_norm * St;
+        En = En_norm * En;
         cv::Mat Tr = findHomography(St, En);
-        // std::cout << Tr << std::endl;
+        cv::Mat En_norm_inv;
+        cv::invert(En_norm, En_norm_inv, cv::DECOMP_SVD);
+        Tr = En_norm_inv * Tr * St_norm;
+
         int count = 0;
         for(int i = 0; i < matches.size(); i++) {
             cv::DMatch match = matches[i];
             cv::KeyPoint p1 = keyPoint1[match.queryIdx];
             cv::KeyPoint p2 = keyPoint2[match.trainIdx];
-            // std::cout << p1.pt.x << ' ' << p1.pt.y << ' ' << p2.pt.x << ' ' << p2.pt.y << std::endl;
             float x1 = Tr.at<float>(0, 0)*p1.pt.x + Tr.at<float>(0, 1)*p1.pt.y + Tr.at<float>(0, 2);
             float y1 = Tr.at<float>(1, 0)*p1.pt.x + Tr.at<float>(1, 1)*p1.pt.y + Tr.at<float>(1, 2);
             float z1 = Tr.at<float>(2, 0)*p1.pt.x + Tr.at<float>(2, 1)*p1.pt.y + Tr.at<float>(2, 2);
-            // std::cout << x1 << ' ' << y1 << ' ' << z1 << std::endl;
-            // std::cout << x1/z1 << ' ' << y1/z1 << ' ' << z1 << std::endl;
-            // std::cout << std::endl;
             cv::Mat vector1 = (cv::Mat_<float>(3, 1) << x1/z1, y1/z1, 1.0);
             cv::Mat vector2 = (cv::Mat_<float>(3, 1) << p2.pt.x, p2.pt.y, 1.0);
-            // std::cout << vector1 << '\n' << vector2 << std::endl;
             double dis = cv::norm(vector1, vector2);
             if(dis < standard) count++;
-            // std::cout << dis << ' ' << count << std::endl;
         }
         if(count > best) {
             best = count;
@@ -134,7 +144,6 @@ cv::Mat spliceImgs(cv::Mat img1, cv::Mat img2, cv::Mat Tr)
     if(!cv::invert(Tr, TrInv, cv::DECOMP_SVD)) {
         std::cerr << "矩阵不可逆!" << std::endl;   
     }
-    std::cout << "test6" << std::endl;
 
     std::vector<cv::Mat> img2Loc;
     cv::Mat LU = (cv::Mat_<float>(3, 1) << 0.0f, 0.0f, 1.0f);
@@ -185,7 +194,7 @@ cv::Mat spliceImgs(cv::Mat img1, cv::Mat img2, cv::Mat Tr)
     return exImg;
 }
 
-void matchImgs(cv::Mat &img1, cv::Mat img2, int maxFeatures=500)
+void matchImgs(cv::Mat &img1, cv::Mat img2, int maxFeatures=500, std::string descriptor="SIFT")
 {
     cv::Ptr<cv::SIFT> sift1 =  cv::SIFT::create();
     cv::Ptr<cv::SIFT> sift2 =  cv::SIFT::create();
@@ -198,10 +207,27 @@ void matchImgs(cv::Mat &img1, cv::Mat img2, int maxFeatures=500)
     sift2->detectAndCompute(img2, cv::Mat(), keyPoint2, descriptor2);
     for(int i = 0; i < descriptor1.rows; i++) {
         int loc = 0;
-        double minDis = 10000000.0, secDis = 10000000.0, rate = 0.7;
-        cv::Mat vector1 = descriptor1.row(i).clone();
+        double minDis = 10000000.0, secDis = 10000000.0, rate = 0.8;
+        cv::Mat vector1, vector2;
+        if(descriptor == "SIFT") {
+            vector1 = descriptor1.row(i).clone();
+        }
+        else if(descriptor == "PIXEL") {
+            int x1 = keyPoint1[i].pt.x, y1 = keyPoint1[i].pt.y;
+            cv::Rect r1(x1-1, y1-1, 3, 3);
+            vector1 = img1(r1).clone().reshape(1, 1);
+        }
+        
         for(int j = 0; j < descriptor2.rows; j++) {
-            cv::Mat vector2 = descriptor2.row(j).clone();
+            if(descriptor == "SIFT") {
+                vector2 = descriptor2.row(j).clone();
+            }
+            else if(descriptor == "PIXEL") {
+                int x2 = keyPoint2[j].pt.x, y2 = keyPoint2[j].pt.y;
+                cv::Rect r2(x2-1, y2-1, 3, 3);
+                vector2 = img1(r2).clone().reshape(1, 1);
+            }
+
             double dis = cv::norm(vector1, vector2);
             if(dis < minDis) {
                 loc = j;
@@ -215,6 +241,11 @@ void matchImgs(cv::Mat &img1, cv::Mat img2, int maxFeatures=500)
         if(minDis < rate * secDis) {
             matches.push_back(cv::DMatch(i, loc, minDis));
         }
+    }
+    std::cout << matches.size() << std::endl;
+    if(matches.size() < 10) {
+        std::cout << "可用特征点太少了" << std::endl;
+        return ;
     }
     cv::Mat Tr = RANSAC(keyPoint1, keyPoint2, matches, img1, img2);
     cv::Mat exImg = spliceImgs(img1, img2, Tr);
@@ -231,14 +262,10 @@ int main()
         readImgs(imgs, path);
         cv::Mat totalImg = imgs[1];
         for(int imgId = 0; imgId < imgs.size(); imgId++) if(imgId != 1) {
-            matchImgs(totalImg, imgs[imgId]);
+            matchImgs(totalImg, imgs[imgId], 500, "SIFT");
         }
         cv::Mat normalizedImg;
         cv::normalize(totalImg, normalizedImg, 0, 255, cv::NORM_MINMAX, CV_8U);
         cv::imwrite("./"+files[fileId]+".png", normalizedImg);
-        // cv::namedWindow("MyWindow", cv::WINDOW_NORMAL);
-        // cv::resizeWindow("MyWindow", totalImg.cols, totalImg.rows);
-        // cv::imshow("MyWindow", totalImg);
-        // cv::waitKey(0);
     }
 }
